@@ -8,6 +8,7 @@ calculate damages — but the orchestration is manual (one tool-call loop).
 import asyncio
 import os
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -16,6 +17,14 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
 from common.llm import get_llm
+
+
+def _normalize(text: str) -> str:
+    text = text.lower().replace("đ", "d")
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return unicodedata.normalize("NFC", text)
+
 
 # ---------------------------------------------------------------------------
 # Simulated legal knowledge base (in production, this would be a vector store)
@@ -81,6 +90,16 @@ LEGAL_KNOWLEDGE = [
             "public interest (Winter v. Natural Resources Defense Council, 2008)."
         ),
     },
+    {
+        "id": "labor_law",
+        "keywords": ["lao động", "sa thải", "hợp đồng lao động", "labor", "termination"],
+        "text": (
+            "Theo Bộ luật Lao động Việt Nam 2019, người sử dụng lao động có thể "
+            "đơn phương chấm dứt hợp đồng trong các trường hợp: (1) người lao động "
+            "thường xuyên không hoàn thành công việc; (2) bị ốm đau, tai nạn đã điều trị "
+            "12 tháng chưa khỏi; (3) thiên tai, hỏa hoạn; (4) người lao động đủ tuổi nghỉ hưu."
+        ),
+    },
 ]
 
 
@@ -91,10 +110,10 @@ LEGAL_KNOWLEDGE = [
 @tool
 def search_legal_database(query: str) -> str:
     """Search the legal knowledge base for relevant statutes, case law, and legal principles."""
-    query_words = set(query.lower().split())
+    query_words = set(_normalize(query).split())
     scored = []
     for entry in LEGAL_KNOWLEDGE:
-        overlap = len(query_words & set(entry["keywords"]))
+        overlap = len(query_words & {_normalize(keyword) for keyword in entry["keywords"]})
         if overlap > 0:
             scored.append((overlap, entry))
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -135,7 +154,26 @@ def calculate_damages(breach_type: str, contract_value: float) -> str:
     )
 
 
-TOOLS = [search_legal_database, calculate_damages]
+@tool
+def check_statute_of_limitations(case_type: str) -> str:
+    """Check the statute of limitations for a case type.
+
+    Args:
+        case_type: Case type such as contract, tort, property, or labor.
+    """
+    normalized = _normalize(case_type)
+    if any(keyword in normalized for keyword in ["contract", "hợp đồng", "hop dong"]):
+        return "4 years (UCC § 2-725) for UCC contract claims."
+    if any(keyword in normalized for keyword in ["tort", "negligence", "bồi thường", "boi thuong"]):
+        return "2-3 years depending on the state and tort category."
+    if any(keyword in normalized for keyword in ["property", "real estate", "tài sản", "tai san"]):
+        return "5 years for many property-related claims."
+    if any(keyword in normalized for keyword in ["labor", "lao động", "lao dong", "termination"]):
+        return "Labor limitation periods depend on the specific claim and jurisdiction."
+    return "Unknown limitation period."
+
+
+TOOLS = [search_legal_database, calculate_damages, check_statute_of_limitations]
 
 QUESTION = "What are the legal consequences if a company breaches a non-disclosure agreement?"
 
